@@ -213,7 +213,7 @@ final class CameraConfigurationManager {
       if (pixels < MIN_PREVIEW_PIXELS || pixels > MAX_PREVIEW_PIXELS) {
         continue;
       }
-      boolean isCandidatePortrait = realWidth < realHeight;
+      boolean isCandidatePortrait = screenAspectRatio < 1;
       int maybeFlippedWidth = isCandidatePortrait ? realHeight : realWidth;
       int maybeFlippedHeight = isCandidatePortrait ? realWidth : realHeight;
       if (maybeFlippedWidth == screenResolution.x && maybeFlippedHeight == screenResolution.y) {
