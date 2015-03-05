@@ -215,4 +215,22 @@
             android:text="@string/msg_default_status"
             android:textColor="@color/status_text"/>
 
+  <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="match_parent" >
+
+      <ImageButton
+          android:id="@+id/fromPictureRoll"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:src="@drawable/shopper_icon" />
+
+      <Button
+          android:id="@+id/button1"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:text="Button@@@" />
+
+  </LinearLayout>
+
 </FrameLayout>
