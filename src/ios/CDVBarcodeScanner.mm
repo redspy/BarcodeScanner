@@ -23,7 +23,7 @@
 // Delegate to handle orientation functions
 // 
 //------------------------------------------------------------------------------
-@protocol CDVBarcodeScannerOrientationDelegate <NSObject>
+@protocol CDVBarcodeScannerOrientationDelegate <NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate>
 
 - (NSUInteger)supportedInterfaceOrientations;
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)interfaceOrientation;
@@ -35,7 +35,7 @@
 // Adds a shutter button to the UI, and changes the scan from continuous to
 // only performing a scan when you click the shutter button.  For testing.
 //------------------------------------------------------------------------------
-#define USE_SHUTTER 0
+#define USE_SHUTTER 1
 
 //------------------------------------------------------------------------------
 @class CDVbcsProcessor;
@@ -66,6 +66,8 @@
 @property (nonatomic)         BOOL                        is1D;
 @property (nonatomic)         BOOL                        is2D;
 @property (nonatomic)         BOOL                        capturing;
+@property (nonatomic)         BOOL                        getImage;
+@property (nonatomic)         CGImageRef                  savedImage;
 
 - (id)initWithPlugin:(CDVBarcodeScanner*)plugin callback:(NSString*)callback parentViewController:(UIViewController*)parentViewController alterateOverlayXib:(NSString *)alternateXib;
 - (void)scanBarcode;
@@ -80,6 +82,8 @@
 - (zxing::Ref<zxing::LuminanceSource>) getLuminanceSourceFromSample:(CMSampleBufferRef)sampleBuffer imageBytes:(uint8_t**)ptr;
 - (UIImage*) getImageFromLuminanceSource:(zxing::LuminanceSource*)luminanceSource;
 - (void)dumpImage:(UIImage*)image;
+- (CMSampleBufferRef)sampleBufferFromCGImage:(CGImageRef)image;
+- (CVPixelBufferRef)pixelBufferFromCGImage:(CGImageRef)image;
 @end
 
 //------------------------------------------------------------------------------
@@ -98,6 +102,7 @@
 - (UIView*)buildOverlayView;
 - (UIImage*)buildReticleImage;
 - (void)shutterButtonPressed;
+- (void)imagePickerController;
 - (IBAction)cancelButtonPressed:(id)sender;
 
 @end
@@ -204,6 +209,8 @@
 @synthesize is1D                 = _is1D;
 @synthesize is2D                 = _is2D;
 @synthesize capturing            = _capturing;
+@synthesize getImage             = _getImage;
+@synthesize savedImage           = _savedImage;
 
 //--------------------------------------------------------------------------
 - (id)initWithPlugin:(CDVBarcodeScanner*)plugin
@@ -221,6 +228,7 @@ parentViewController:(UIViewController*)parentViewController
     self.is1D      = YES;
     self.is2D      = YES;
     self.capturing = NO;
+    self.getImage  = NO;
     
     return self;
 }
@@ -236,7 +244,9 @@ parentViewController:(UIViewController*)parentViewController
     self.alternateXib = nil;
     
     self.capturing = NO;
+    self.getImage  = NO;
     
+    self.savedImage = nil;
     [super dealloc];
 }
 
@@ -359,22 +369,22 @@ parentViewController:(UIViewController*)parentViewController
     if (!self.capturing) return;
     
 #if USE_SHUTTER
-    if (!self.viewController.shutterPressed) return;
-    self.viewController.shutterPressed = NO;
-    
-    UIView* flashView = [[[UIView alloc] initWithFrame:self.viewController.view.frame] autorelease];
-    [flashView setBackgroundColor:[UIColor whiteColor]];
-    [self.viewController.view.window addSubview:flashView];
-    
-    [UIView
-     animateWithDuration:.4f
-     animations:^{
-         [flashView setAlpha:0.f];
-     }
-     completion:^(BOOL finished){
-         [flashView removeFromSuperview];
-     }
-     ];
+//    if (!self.viewController.shutterPressed) return;
+//    self.viewController.shutterPressed = NO;
+//    
+//    UIView* flashView = [[[UIView alloc] initWithFrame:self.viewController.view.frame] autorelease];
+//    [flashView setBackgroundColor:[UIColor whiteColor]];
+//    [self.viewController.view.window addSubview:flashView];
+//    
+//    [UIView
+//     animateWithDuration:.4f
+//     animations:^{
+//         [flashView setAlpha:0.f];
+//     }
+//     completion:^(BOOL finished){
+//         [flashView removeFromSuperview];
+//     }
+//     ];
     
     //         [self dumpImage: [[self getImageFromSample:sampleBuffer] autorelease]];
 #endif
@@ -387,6 +397,7 @@ parentViewController:(UIViewController*)parentViewController
     // get it back to free it.  Saving it in imageBytes.
     uint8_t* imageBytes;
     
+
     //        NSTimeInterval timeStart = [NSDate timeIntervalSinceReferenceDate];
     
     try {
@@ -402,7 +413,13 @@ parentViewController:(UIViewController*)parentViewController
         //            decodeHints.addFormat(BarcodeFormat_ITF);   causing crashes
         
         // here's the meat of the decode process
+        if (self.getImage) {
+            self.capturing = NO;
+            sampleBuffer = [self sampleBufferFromCGImage:[self savedImage]];
+            self.getImage = NO;
+        }
         Ref<LuminanceSource>   luminanceSource   ([self getLuminanceSourceFromSample: sampleBuffer imageBytes:&imageBytes]);
+
         //            [self dumpImage: [[self getImageFromLuminanceSource:luminanceSource] autorelease]];
         Ref<Binarizer>         binarizer         (new HybridBinarizer(luminanceSource));
         Ref<BinaryBitmap>      bitmap            (new BinaryBitmap(binarizer));
@@ -595,6 +612,67 @@ parentViewController:(UIViewController*)parentViewController
      ];
 }
 
+- (CVPixelBufferRef)pixelBufferFromCGImage:(CGImageRef)image
+{
+    CGSize frameSize = CGSizeMake(CGImageGetWidth(image),
+                                  CGImageGetHeight(image));
+    NSDictionary *options =
+    [NSDictionary dictionaryWithObjectsAndKeys:
+     [NSNumber numberWithBool:YES],
+     kCVPixelBufferCGImageCompatibilityKey,
+     [NSNumber numberWithBool:YES],
+     kCVPixelBufferCGBitmapContextCompatibilityKey,
+     nil];
+    CVPixelBufferRef pxbuffer = NULL;
+    
+    CVReturn status =
+    CVPixelBufferCreate(
+                        kCFAllocatorDefault, frameSize.width, frameSize.height,
+                        kCVPixelFormatType_32ARGB, (__bridge CFDictionaryRef)options,
+                        &pxbuffer);
+    NSParameterAssert(status == kCVReturnSuccess && pxbuffer != NULL);
+    
+    CVPixelBufferLockBaseAddress(pxbuffer, 0);
+    void *pxdata = CVPixelBufferGetBaseAddress(pxbuffer);
+    
+    CGColorSpaceRef rgbColorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(
+                                                 pxdata, frameSize.width, frameSize.height,
+                                                 8, CVPixelBufferGetBytesPerRow(pxbuffer),
+                                                 rgbColorSpace,
+                                                 (CGBitmapInfo)kCGBitmapByteOrder32Little |
+                                                 kCGImageAlphaPremultipliedFirst);
+    
+    CGContextDrawImage(context, CGRectMake(0, 0, CGImageGetWidth(image),
+                                           CGImageGetHeight(image)), CGImageCreateCopy(image));
+    CGColorSpaceRelease(rgbColorSpace);
+    CGContextRelease(context);
+    
+    CVPixelBufferUnlockBaseAddress(pxbuffer, 0);
+    
+    return pxbuffer;
+}
+
+- (CMSampleBufferRef)sampleBufferFromCGImage:(CGImageRef)image {
+    CVPixelBufferRef pixelBuffer = [self pixelBufferFromCGImage:image];
+    CMSampleBufferRef newSampleBuffer = NULL;
+    CMSampleTimingInfo timimgInfo = kCMTimingInfoInvalid;
+    CMVideoFormatDescriptionRef videoInfo = NULL;
+    CMVideoFormatDescriptionCreateForImageBuffer(
+                                                 NULL, pixelBuffer, &videoInfo);
+    CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault,
+                                       pixelBuffer,
+                                       true,
+                                       NULL,
+                                       NULL,
+                                       videoInfo,
+                                       &timimgInfo,
+                                       &newSampleBuffer);
+    
+    return newSampleBuffer;
+}
+
+
 @end
 
 //------------------------------------------------------------------------------
@@ -671,7 +749,25 @@ parentViewController:(UIViewController*)parentViewController
 
 //--------------------------------------------------------------------------
 - (void)shutterButtonPressed {
-    self.shutterPressed = YES;
+    //self.shutterPressed = YES;
+    UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+    picker.delegate = self;
+    picker.allowsEditing = YES;
+    picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+    
+    [self presentViewController:picker animated:YES completion:NULL];
+}
+
+- (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary *)info {
+    
+    UIImage *chosenImage = info[UIImagePickerControllerEditedImage];
+    //self.imageView.image = chosenImage;
+    //chosenImage.CGImage
+    
+    self.processor.savedImage = (CGImageRef)chosenImage.CGImage;
+    self.processor.getImage = YES;
+    [picker dismissViewControllerAnimated:YES completion:NULL];
+    
 }
 
 //--------------------------------------------------------------------------
@@ -775,7 +871,7 @@ parentViewController:(UIViewController*)parentViewController
 //--------------------------------------------------------------------------
 
 #define RETICLE_SIZE    500.0f
-#define RETICLE_WIDTH    10.0f
+#define RETICLE_WIDTH    2.0f
 #define RETICLE_OFFSET   60.0f
 #define RETICLE_ALPHA     0.4f
 
@@ -787,19 +883,19 @@ parentViewController:(UIViewController*)parentViewController
     UIGraphicsBeginImageContext(CGSizeMake(RETICLE_SIZE, RETICLE_SIZE));
     CGContextRef context = UIGraphicsGetCurrentContext();
     
-    if (self.processor.is1D) {
-        UIColor* color = [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:RETICLE_ALPHA];
-        CGContextSetStrokeColorWithColor(context, color.CGColor);
-        CGContextSetLineWidth(context, RETICLE_WIDTH);
-        CGContextBeginPath(context);
-        CGFloat lineOffset = RETICLE_OFFSET+(0.5*RETICLE_WIDTH);
-        CGContextMoveToPoint(context, lineOffset, RETICLE_SIZE/2);
-        CGContextAddLineToPoint(context, RETICLE_SIZE-lineOffset, 0.5*RETICLE_SIZE);
-        CGContextStrokePath(context);
-    }
+//    if (self.processor.is1D) {
+//        UIColor* color = [UIColor colorWithRed:0.0 green:1.0 blue:0.0 alpha:RETICLE_ALPHA];
+//        CGContextSetStrokeColorWithColor(context, color.CGColor);
+//        CGContextSetLineWidth(context, RETICLE_WIDTH);
+//        CGContextBeginPath(context);
+//        CGFloat lineOffset = RETICLE_OFFSET+(0.5*RETICLE_WIDTH);
+//        CGContextMoveToPoint(context, lineOffset, RETICLE_SIZE/2);
+//        CGContextAddLineToPoint(context, RETICLE_SIZE-lineOffset, 0.5*RETICLE_SIZE);
+//        CGContextStrokePath(context);
+//    }
     
     if (self.processor.is2D) {
-        UIColor* color = [UIColor colorWithRed:0.0 green:1.0 blue:0.0 alpha:RETICLE_ALPHA];
+        UIColor* color = [UIColor colorWithRed:1.0 green:0.2 blue:0.0 alpha:RETICLE_ALPHA];
         CGContextSetStrokeColorWithColor(context, color.CGColor);
         CGContextSetLineWidth(context, RETICLE_WIDTH);
         CGContextStrokeRect(context,
